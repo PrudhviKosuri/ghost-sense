@@ -5,6 +5,8 @@
 #include <Adafruit_SSD1306.h>
 #include "esp_wifi.h"
 #include "secrets.h"
+const uint8_t dnsQ[] = {0x12,0x34,0x01,0x00,0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00,
+                        7,'e','x','a','m','p','l','e',3,'c','o','m',0,0,1,0,1};
 const char* SSID = WIFI_SSID;
 const char* PASS = WIFI_PASS;
 
@@ -30,7 +32,7 @@ volatile int lastSig = 0, lastMcs = 0, lastCwb = 0, lastNoise = 0;
 void csiCallback(void *ctx, wifi_csi_info_t *info) {
   if (!info || !info->buf) return;
   if (memcmp(info->mac, bssid, 6) != 0) return;
-
+  if (info->rx_ctrl.sig_mode == 0) return;   // ignore legacy frames, use HT only
   int n = info->len / 2;
   if (n > MAXSC) n = MAXSC;
   if (n < 10) return;
@@ -112,7 +114,7 @@ void setup() {
   while (WiFi.status() != WL_CONNECTED) delay(300);
   WiFi.setSleep(false);
   memcpy(bssid, WiFi.BSSID(), 6);
-  udp.begin(4210);
+  udp.begin(5353);
   startCSI();
 
   Serial.print("IP: "); Serial.println(WiFi.localIP());
@@ -124,10 +126,17 @@ void loop() {
   static uint32_t lastPkts = 0;
   static bool started = false;
 
-  // Wait 1 second while draining the UDP packets coming from the Mac
-  uint32_t t0 = millis();
-  while (millis() - t0 < 1000) {
-    if (udp.parsePacket()) { uint8_t b[64]; udp.read(b, sizeof(b)); }
+  // Send 20 DNS queries per second and drain UDP packets on the local port.
+  uint32_t endMs = millis() + 1000;
+  static uint32_t nextSend = millis();
+  while ((int32_t)(endMs - millis()) > 0) {
+    if ((int32_t)(millis() - nextSend) >= 0) {
+      udp.beginPacket(WiFi.dnsIP(), 53);
+      udp.write(dnsQ, sizeof(dnsQ));
+      udp.endPacket();
+      nextSend += 50;
+    }
+    if (udp.parsePacket()) { uint8_t b[256]; udp.read(b, sizeof(b)); }
     else delay(1);
   }
 
@@ -143,14 +152,14 @@ void loop() {
   uint32_t rate = p - lastPkts;
   lastPkts = p;
 
-  // Start the timeline only once the Mac stream is flowing (>60 pkts/s)
+  // Start the timeline once enough HT frames arrive from the router.
   if (!started) {
-    if (rate > 60) { started = true; startMs = millis(); }
-    else { show("WAIT", "start sender", 0, rate); Serial.printf("waiting for sender... pkts/s=%lu\n", rate); return; }
+    if (rate > 10) { started = true; startMs = millis(); }
+    else { show("WAIT", "waiting for DNS", 0, rate); Serial.printf("waiting for HT traffic... pkts/s=%lu\n", rate); return; }
   }
 
 
-      float rm = rc > 0 ? rs / rc : 0;
+  float rm = rc > 0 ? rs / rc : 0;
   float rsd = rc > 1 ? sqrtf(fmaxf(0.0f, rq / rc - rm * rm)) : 0;
 
   static float base = 0;
@@ -158,7 +167,7 @@ void loop() {
   static int hist[5] = {0, 0, 0, 0, 0};
   static int hi = 0;
 
-  bool valid = rc >= 20;
+  bool valid = rc >= 10;
   if (valid && !haveBase) { base = rm; haveBase = true; }
   float dev = valid ? fabsf(rm - base) : 0;
 

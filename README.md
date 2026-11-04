@@ -6,7 +6,7 @@ Camera-free motion detection with an ESP32 and Wi-Fi signal strength, built towa
 
 ## How it works
 
-1. A Mac runs `tools/sender.py`, which sends a steady UDP stream (~90 packets/s) to the ESP32 through the router.
+1. The ESP32 generates its own traffic by sending 20 DNS queries/s to the router.
 2. The ESP32 receives the router's frames through the Wi-Fi CSI callback and records the signal strength (RSSI) of each one.
 3. Every second it computes the mean and standard deviation of RSSI, compares the mean to a slowly adapting baseline, and flags the second as "motion" if the level moves more than 1 dB or wobbles more than 1.8 dB.
 4. Motion is declared when at least 2 of the last 5 seconds are flagged. The result is shown on the OLED.
@@ -15,7 +15,7 @@ Camera-free motion detection with an ESP32 and Wi-Fi signal strength, built towa
 
 - OceanLabz ESP32 AI starter kit (classic ESP32-D0WD-V3, 30-pin)
 - 0.96" SSD1306 OLED (I2C: SDA = GPIO 21, SCL = GPIO 22)
-- A 2.4 GHz Wi-Fi router and a laptop to run the sender
+- A 2.4 GHz Wi-Fi router (a computer is only needed for optional UDP debugging)
 
 ## Setup
 
@@ -24,7 +24,7 @@ Camera-free motion detection with an ESP32 and Wi-Fi signal strength, built towa
 3. Copy `firmware/ghost_sense/secrets.example.h` to `secrets.h` and enter your Wi-Fi details.
 4. Select board "ESP32 Dev Module", upload `firmware/ghost_sense/ghost_sense.ino` (use upload speed 115200 if uploads fail).
 5. Open the Serial Monitor at 115200 baud and note the ESP32's IP address.
-6. On your computer, on the same Wi-Fi: `python3 tools/sender.py <ESP32_IP>`
+6. Traffic starts automatically. For optional UDP debugging, run `python3 tools/sender.py <ESP32_IP>` from a computer on the same Wi-Fi; the script remains available under `tools/`.
 7. Stay still for the first ~10 s (baseline learning), then walk across the line between the router and the ESP32.
 
 ## Results (single run, ~12 ft link, plastic table in between)
@@ -42,7 +42,8 @@ This is one run, so it is a first estimate and not a benchmark. A proper test (r
 
 ## What I tried first (engineering log)
 
-- **Pinging the router from the ESP32** to generate CSI: the packet rate collapsed after about 20 s with `ping_sock: send error` messages. Replaced by a UDP stream from the laptop, which gave a steady ~85 packets/s.
+- **Pinging the router from the ESP32** to generate CSI: the packet rate collapsed after about 20 s with `ping_sock: send error` messages. An external UDP stream was a temporary workaround.
+- Replaced laptop traffic with on-device DNS queries after ESP32 pings collapsed; found that mixing legacy and HT frames inflated RSSI noise, fixed by filtering HT only.
 - **CSI amplitude-change score** (mean absolute change between consecutive packets, normalized): it did not separate still from moving reliably. It stayed at a high plateau for reasons I could not explain, including in an empty room.
 - **Suspected Wi-Fi mode switching**: logged sig_mode, MCS, bandwidth and noise floor. They were nearly constant, so this was not the cause.
 - **RSSI deviation from a slow baseline** worked, and is the current detector.
@@ -51,7 +52,7 @@ This is one run, so it is a first estimate and not a benchmark. A proper test (r
 
 - Uses RSSI (signal strength), not full CSI features, so it is coarse.
 - Detects movement crossing the link. It does not detect a person sitting perfectly still.
-- Needs a second device running `sender.py`.
+- Standalone: the ESP32 generates its own traffic with 20 DNS queries/s to the router.
 - Thresholds (1 dB, 1.8 dB) were tuned on one room and one layout.
 - Classic ESP32 only (no PSRAM), so on-device LLMs are not feasible.
 
